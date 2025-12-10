@@ -57,6 +57,7 @@ class ReflexCaptureAgent(CaptureAgent):
         self.lost_food = None
         self.previous_capsules = self.get_capsules(game_state)
         self.capsule_timer = 0
+        # Identify dead ends in the map to avoid getting trapped
         self.dead_ends = self.get_dead_ends(game_state.data.layout, game_state)
         self.frontier_list = self.get_frontier(game_state) # all walkable positions on the frontier
         self.frontier_patrol = self.get_frontier_patrol(game_state)
@@ -64,7 +65,7 @@ class ReflexCaptureAgent(CaptureAgent):
         self.flanking_target = None
         self.patrol_target_defensive = None
         self.patrol_target_offensive = None
-
+        
 
 
     def get_frontier(self, game_state):
@@ -77,7 +78,6 @@ class ReflexCaptureAgent(CaptureAgent):
             width = layout.width
             
             # Calculate the middle x-coordinate
-            # Note: We use int() because coordinates must be integers
             mid_x = int(width / 2) 
             
             # If we are the Red team, the boundary is the column just to the left of the center.
@@ -103,7 +103,6 @@ class ReflexCaptureAgent(CaptureAgent):
         width = layout.width
         
         # Calculate the middle x-coordinate
-        # Note: We use int() because coordinates must be integers
         mid_x = int(width / 2)
         
         patrol_x = None
@@ -124,12 +123,15 @@ class ReflexCaptureAgent(CaptureAgent):
 
 
     def get_dead_ends(self, layout, game_state) :
+        """
+        Analyzes the map to find positions that are dead ends (nodes with only 1 neighbor).
+        This is crucial for the offensive agent to avoid being trapped by defenders.
+        """
         dead_ends = set()
         height = layout.height
         width = layout.width
         
         # Calculate the middle x-coordinate
-        # Note: We use int() because coordinates must be integers
         mid_x = int(width / 2) 
         
         # If we are the Red team, the boundary is the column just to the left of the center.
@@ -189,9 +191,10 @@ class ReflexCaptureAgent(CaptureAgent):
             my_pos = game_state.get_agent_position(self.index)
             
             if type(self).__name__ == 'DefensiveReflexAgent' :
-                # --- STATE MANAGEMENT: DEFENSE (Shadowing) ---
+                # Defense (lost food)
                 current_food = self.get_food_you_are_defending(game_state).as_list()
                 eaten_food = set(self.previous_food_defending) - set(current_food)
+                # If food was eaten, update lost_food position
                 if len(eaten_food) > 0:
                     self.lost_food = eaten_food.pop()
                 self.previous_food_defending = current_food
@@ -201,7 +204,7 @@ class ReflexCaptureAgent(CaptureAgent):
                         self.lost_food = None # Reached the lost food
 
             if type(self).__name__ == 'OffensiveReflexAgent' :
-                # --- STATE MANAGEMENT: OFFENSIVE (Capsules) ---
+                # Offensive (Capsules)
                 current_capsules = self.get_capsules(game_state)
 
                 if len(current_capsules) < len(self.previous_capsules) :
@@ -213,19 +216,21 @@ class ReflexCaptureAgent(CaptureAgent):
                     self.capsule_timer -= 1
             
 
-             # --- STATE MANAGEMENT: DEFENSE (Patrol) ---
+             # Defense (Patrol) 
             if self.lost_food is None :
                 
                 patrol_points = self.frontier_patrol
 
                 if type(self).__name__ == 'DefensiveReflexAgent' :
-
+                    
+                    # Defend top, center, and bottom of frontier
                     targets_indices_defensive = [0, int(len(patrol_points)/2), len(patrol_points) - 1]
 
                     target_pos_defensive = patrol_points[targets_indices_defensive[self.current_frontier_index_patrol_point]]
 
                     self.patrol_target_defensive = target_pos_defensive
 
+                    # Cycle to the next patrol point upon reaching the current one
                     if self.get_maze_distance(my_pos, target_pos_defensive) <= 1:
                         self.current_frontier_index_patrol_point = (self.current_frontier_index_patrol_point + 1) % 3
                 else :
@@ -241,23 +246,25 @@ class ReflexCaptureAgent(CaptureAgent):
 
                 
             if type(self).__name__ == 'OffensiveReflexAgent' :
-                # --- STATE MANAGEMENT: OFFENSE (Flanking) --- <--- NEW PLACE HERE
-                # If we have a flank target and we've reached it (or we are already Pacman), we clear it.
+                # Flanking
+                # If we have a flank target and we've reached it, we clear it.
                 if self.flanking_target is not None:
-                    # Note: You can include 'or my_state.is_pacman' if you want it to stop when crossing the line
-                    # But to ensure it goes deep, we only keep the distance.
                     dist = self.get_maze_distance(my_pos, self.flanking_target)
                     if dist <= 2:
                         self.flanking_target = None
 
-            # --- ACTION SELECTION (Standard) ---
             actions = game_state.get_legal_actions(self.index)
+
+            # You can profile your evaluation time by uncommenting these lines
+            # start = time.time()
             values = [self.evaluate(game_state, a) for a in actions]
+            # print 'eval time for agent %d: %.4f' % (self.index, time.time() - start)
+
             max_value = max(values)
             best_actions = [a for a, v in zip(actions, values) if v == max_value]
 
-            # Time fail-safe (Forced return if running out of food)
             food_left = len(self.get_food(game_state).as_list())
+
             if food_left <= 2:
                 best_dist = 9999
                 best_action = None
@@ -316,6 +323,8 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
   we give you to get an idea of what an offensive agent might look like,
   but it is by no means the best or only way to build an offensive agent.
   """
+    
+    # 
 
     def get_features(self, game_state, action):
         features = util.Counter()
@@ -325,18 +334,16 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
         my_pos_int = (int(my_pos[0]), int(my_pos[1]))
         food_carrying = game_state.get_agent_state(self.index).num_carrying # how many food pellets in the current agent
         food_list = self.get_food(successor).as_list() # all food pellets on the enemy side
-        frontier_list = self.frontier_list
         enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)] # enemies' states
         defenders = [enemie for enemie in enemies if not enemie.is_pacman and enemie.get_position() is not None and enemie.scared_timer == 0] #(enemy)defenders' states
-        scared_defenders = [enemie for enemie in enemies if not enemie.is_pacman and enemie.get_position() is not None and enemie.scared_timer > 10] #(enemy)defenders' states
-        attackers = [enemie for enemie in enemies if enemie.is_pacman]
         power_capsules = self.get_capsules(successor)
-        is_flanking = False
         current_score = self.get_score(game_state)
         time_left = game_state.data.timeleft
+        # Condition to determine if we should prioritize returning to base
         should_return = (food_carrying >= 4 and self.capsule_timer == 0) or (current_score == 0 and food_carrying >= 1) or (time_left <= 75 and food_carrying > 0)
         winning_comfortably = False
 
+        # If we have a significant lead, switch to a defensive posture
         if current_score >= 5 or (time_left <= 500 and current_score > 0):
             winning_comfortably = True
 
@@ -350,7 +357,7 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
             features['flank_entry'] = 0
 
 
-            # --- Lógica de Defesa (Adaptada para o Atacante) ---
+            # Defense (Adapted for Attacker)
             features['on_defense_o'] = 1
             if my_state.is_pacman: features['on_defense_o'] = 0
 
@@ -382,12 +389,7 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
             features['distance_to_patrol_point_o'] = 0
             features['scared_o'] = 0
 
-            # ---------------------------------------------------------
-            # 1. ACTIVATE FLANKING (If necessary)
-            # ---------------------------------------------------------
-            # Note: Target clearing (reset) was already done in the Parent class's choose_action.
-            # Here we only check if we need to START a new flank.
-            
+            # Flanking         
             current_is_pacman = game_state.get_agent_state(self.index).is_pacman
             
             # We only start flanking if: We have no target, we are at base, and we see a blockade
@@ -395,38 +397,36 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
                 dists = [self.get_maze_distance(my_pos, d.get_position()) for d in defenders]
                 min_dist = min(dists)
                 
+                # Check for blockade
                 if min_dist < 8:
                     defender = defenders[dists.index(min_dist)]
                     defender_pos = defender.get_position()
                     
+                    # Find the frontier point furthest from the defender to use as entry
                     if len(self.frontier_list) > 0:
                         dist_from_def = [self.get_maze_distance(defender_pos, f) for f in self.frontier_list]
                         best_entry = self.frontier_list[dist_from_def.index(max(dist_from_def))]
                         self.flanking_target = best_entry 
 
-            # ---------------------------------------------------------
-            # 2. FEATURE CALCULATION (Exclusive Logic)
-            # ---------------------------------------------------------
 
-            # RETURN MODE (Maximum Priority if full)
+            # Returning to base
             if should_return :
                 features['distance_to_home'] = min([self.get_maze_distance(my_pos, f) for f in self.frontier_list])
                 features['successor_score'] = 0
                 features['distance_to_food'] = 0
                 features['flank_entry'] = 0
-                # If we have to escape with food, we cancel any flanking plan
                 self.flanking_target = None 
 
-            # FLANKING MODE (High Priority - Persistent)
+            # Flanking mode
+            # If we are trying to go around a defender, ignore food and home distance
             elif self.flanking_target is not None:
                 features['flank_entry'] = self.get_maze_distance(my_pos, self.flanking_target)
                 
-                # TOTAL BLOCKADE OF DISTRACTIONS
                 features['successor_score'] = 0
                 features['distance_to_food'] = 0
                 features['distance_to_home'] = 0 
 
-            # NORMAL MODE (Food)
+            # Normal mode
             else:
                 features['successor_score'] = -len(food_list)
                 if len(food_list) > 0:
@@ -434,25 +434,19 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
                 
                 features['distance_to_home'] = 0
 
-            # ---------------------------------------------------------
-            # 3. SAFETY AND DEAD ENDS
-            # ---------------------------------------------------------
-            
+
             # Danger
             if len(defenders) > 0:
                 dists = [self.get_maze_distance(my_pos, d.get_position()) for d in defenders]
                 min_dist = min(dists)
                 
-                # "Courage" adjustment:
-                # If we are at base (not Pacman), we tolerate the enemy closer (2 steps)
-                # If we are Pacman, we keep the safe distance (5 steps)
+                # If we are at base, we tolerate the enemy closer. If we are Pacman, we keep the safe distance 
                 threshold = 5
                 if not my_state.is_pacman: threshold = 2
-                    
+                
                 if min_dist < threshold:
                     features['danger'] = (threshold - min_dist)
                     
-
             # Dead Ends
             if my_pos_int in self.dead_ends:
                 nearby_defenders = False
@@ -461,6 +455,7 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
                     if min(dists_to_def) < 6:
                         nearby_defenders = True
 
+                # If trapped in a dead end with defenders nearby, try to use a capsule if available otherwise return home
                 if nearby_defenders and my_pos_int not in power_capsules:
                     food_set = set(food_list)
                     only_food_in_dead_ends = food_set.issubset(self.dead_ends)
@@ -483,7 +478,6 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
         if action == Directions.STOP: features['stop'] = 1
         rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
         if action == rev: features['reverse'] = 1 
-        
             
         return features
 
@@ -494,9 +488,9 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
 
         if current_score >= 5 or (game_state.data.timeleft <= 500 and current_score > 0):
             winning_comfortably = True
-        # ------------------------------------------
 
         if winning_comfortably:
+            # Weights for the defense mode
             return {'num_invaders_o': -1000, 
                 'on_defense_o': 10000, 
                 'invader_distance_o': -10,
@@ -506,7 +500,7 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
                 'reverse' : -2
                 }
         else: 
-            # Pesos Normais de Ataque
+            # Weights for normal attacker behaviour
             return {
                 'successor_score': 100, 
                 'distance_to_food': -1, 
@@ -535,14 +529,9 @@ class DefensiveReflexAgent(ReflexCaptureAgent):
 
         my_state = successor.get_agent_state(self.index)
         my_pos = my_state.get_position()
-        current_defending_food = self.get_food_you_are_defending(game_state).as_list()
-        successor_defending_food = self.get_food_you_are_defending(successor).as_list()
         enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)] # enemies' states
-        defenders = [enemie for enemie in enemies if not enemie.is_pacman and enemie.get_position() is not None and enemie.scared_timer == 0] #(enemy)defenders' states
-        invaders_unseen = [enemie for enemie in enemies if enemie.is_pacman]
-        frontier_patrol = self.frontier_patrol
         
-        # Computes whether we're on defense (1) or offense (0)
+        # Computes whether we're on defense or offense
         features['on_defense'] = 1
         if my_state.is_pacman: features['on_defense'] = 0
 
@@ -552,6 +541,8 @@ class DefensiveReflexAgent(ReflexCaptureAgent):
         if len(invaders) > 0:
             dists = [self.get_maze_distance(my_pos, a.get_position()) for a in invaders]
             closest_dist = min(dists)
+            
+            # If we are scared, we should avoid the invader unless they are in a safety distance 
             if my_state.scared_timer > 0 :
                 if closest_dist < 4 :
                     features['scared'] = min(dists)
